@@ -1,0 +1,39 @@
+# Cada regra aqui existe por um motivo concreto: ou o proprio install.ps1
+# gera o arquivo, ou a suite de testes gera. Regra sem motivo real vira
+# ruido e mascara arquivo que deveria ter sido versionado.
+
+# --- Gerado pelo install.ps1 ---
+# Com -ConfigScope Project, a configuracao e gravada no diretorio atual.
+# Ela contem caminhos locais e o modelo escolhido para AQUELA maquina:
+# nao serve para mais ninguem e nao deve ir para o repositorio.
+opencode.json
+opencode.json.*.bak
+
+# Log de auditoria (-LogPath). Registra usuario e hostname.
+*.jsonl
+
+# Modelfile de teste, criado a mao por quem for medir numeros para o catalogo.
+Modelfile
+
+# --- Gerado pelos testes ---
+testresults*.xml
+coverage*.xml
+
+# --- Artefatos de empacotamento ---
+*.zip
+
+# --- Pasta de descarte ---
+# O bridge do Claude nao apaga arquivos na maquina do usuario, so move para
+# ca. Ignorado para que sobra de sessao anterior nunca entre em um commit.
+_to_delete/
+
+# --- Editores ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- Sistema operacional ---
+Thumbs.db
+desktop.ini
+.DS_Store

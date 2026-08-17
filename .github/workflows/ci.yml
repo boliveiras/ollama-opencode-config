@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -MinimumVersion 1.22.0
+
+      - name: Analise estatica
+        shell: pwsh
+        run: |
+          $findings = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "$($findings.Count) achado(s) do PSScriptAnalyzer"
+          }
+          Write-Host 'Nenhum achado.'
+
+      - name: Compatibilidade de sintaxe 5.1 e 7
+        shell: pwsh
+        run: |
+          $findings = Invoke-ScriptAnalyzer -Path . -Recurse `
+            -IncludeRule PSUseCompatibleSyntax `
+            -Settings @{
+              Rules = @{
+                PSUseCompatibleSyntax = @{
+                  Enable         = $true
+                  TargetVersions = @('5.1', '7.0')
+                }
+              }
+            }
+          if ($findings) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw 'Sintaxe incompativel com PowerShell 5.1'
+          }
+          Write-Host 'Compativel com 5.1 e 7.'
+
+  test:
+    name: Pester (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # powershell = Windows PowerShell 5.1 | pwsh = PowerShell 7+
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Pester
+        shell: ${{ matrix.shell }}
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.5.0
+
+      - name: Rodar testes
+        shell: ${{ matrix.shell }}
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = "testresults-${{ matrix.shell }}.xml"
+          Invoke-Pester -Configuration $config
+
+      - name: Publicar resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testresults-${{ matrix.shell }}
+          path: testresults-${{ matrix.shell }}.xml
+          if-no-files-found: ignore
+
+  remote:
+    name: Execucao remota simulada (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Via iex, como o usuario final faria
+        shell: ${{ matrix.shell }}
+        env:
+          CI: 'true'
+        run: |
+          # Le do disco em vez da rede, mas exercita o mesmo caminho de
+          # codigo: sem arquivo de script, sem variavel de script, escopo
+          # global. O runner nao tem GPU nem necessariamente winget, entao a
+          # assercao e sobre ter chegado a decidir o modelo - nao sobre o
+          # provisionamento completo, que depende do ambiente.
+          $saida = ((Get-Content -Raw ./install.ps1) | Invoke-Expression) *>&1 | Out-String
+          Write-Host $saida
+          if ($saida -notmatch 'Configuracao escolhida') {
+            throw 'O script nao chegou a decidir modelo e contexto no modo iex'
+          }
+          if ($saida -match 'The attribute cannot be added') {
+            throw 'Regressao: atributo de validacao no bloco param() quebra o modo iex'
+          }
+
+      - name: Via scriptblock com parametros
+        shell: ${{ matrix.shell }}
+        env:
+          CI: 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sb = [scriptblock]::Create((Get-Content -Raw ./install.ps1))
+          & $sb -ShowPlanOnly
+          if ($LASTEXITCODE -ne 0) { throw "scriptblock terminou com $LASTEXITCODE" }
+
+      - name: A sessao continua utilizavel depois do iex
+        shell: ${{ matrix.shell }}
+        env:
+          CI: 'true'
+        run: |
+          $antes = $ErrorActionPreference
+          (Get-Content -Raw ./install.ps1) | Invoke-Expression
+          if ($ErrorActionPreference -ne $antes) {
+            throw "O script vazou ErrorActionPreference: '$antes' virou '$ErrorActionPreference'"
+          }
+          Write-Host 'Preferencias restauradas corretamente.'
+
+  secrets:
+    name: Varredura de segredos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  encoding:
+    name: Encoding ASCII
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verificar ASCII puro e ausencia de BOM
+        run: |
+          set -euo pipefail
+          falhou=0
+          while IFS= read -r -d '' f; do
+            if LC_ALL=C grep -qP '[^\x00-\x7F]' "$f"; then
+              echo "::error file=$f::contem byte fora de ASCII"
+              falhou=1
+            fi
+            if head -c 3 "$f" | grep -q $'\xef\xbb\xbf'; then
+              echo "::error file=$f::comeca com BOM"
+              falhou=1
+            fi
+          done < <(find . -path ./.git -prune -o -name '*.ps1' -print0)
+          [ "$falhou" -eq 0 ] && echo "Tudo ASCII puro, sem BOM."
+          exit "$falhou"
+
+      - name: O blob e igual ao arquivo (sem conversao de EOL)
+        run: |
+          set -euo pipefail
+          # O install.ps1 e servido cru pelo raw e executado com 'irm | iex':
+          # o usuario recebe o BLOB. Se o Git normalizar as quebras de linha,
+          # o blob passa a diferir do arquivo testado e do hash publicado.
+          # '-text' no .gitattributes evita isso; aqui garantimos que continua.
+          falhou=0
+          while IFS= read -r f; do
+            eol=$(git ls-files --eol -- "$f" | awk '{print $1, $2}')
+            if [ "$eol" != "i/crlf w/crlf" ]; then
+              echo "::error file=$f::EOL inesperado ($eol). Esperado 'i/crlf w/crlf'."
+              falhou=1
+              continue
+            fi
+            if ! cmp -s <(git cat-file blob "HEAD:$f") "$f"; then
+              echo "::error file=$f::o blob difere do arquivo em disco"
+              falhou=1
+            fi
+          done < <(git ls-files '*.ps1')
+          [ "$falhou" -eq 0 ] && echo "Blob identico ao arquivo em todos os .ps1."
+          exit "$falhou"
+
+  checksum:
+    name: Publicar hash
+    runs-on: ubuntu-latest
+    needs: [analyze, test, remote, encoding]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: SHA-256 do install.ps1
+        run: |
+          # Publicado no resumo do job para quem quiser conferir o que baixou
+          # antes de executar.
+          sha256sum install.ps1 | tee -a "$GITHUB_STEP_SUMMARY"

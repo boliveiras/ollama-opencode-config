@@ -1,0 +1,28 @@
+# O install.ps1 e servido cru pelo raw.githubusercontent.com e executado com
+# 'irm | iex'. O que chega ao usuario e o BLOB do repositorio, byte a byte.
+#
+# Por isso os .ps1 sao marcados com -text (sem normalizacao): o que foi
+# commitado e exatamente o que o raw entrega, em qualquer plataforma.
+#
+# A alternativa obvia, 'text eol=crlf', faz o oposto do que parece: o Git
+# guarda o blob em LF e converte apenas no checkout. O raw serviria LF
+# enquanto o clone local mostraria CRLF, e o SHA-256 que a CI publica nao
+# bateria com o do arquivo baixado. Verificacao de integridade que falha
+# sozinha e pior que nao ter verificacao.
+#
+# 'diff' mantem o arquivo tratado como texto em diff e blame, apesar do -text.
+#
+# ORDEM IMPORTA: no .gitattributes vence o ULTIMO padrao que casa. As regras
+# especificas ficam depois da generica, senao '* text=auto' anula o -text.
+
+# Regra generica primeiro.
+* text=auto eol=lf
+
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Especificas por ultimo: estas sao as que precisam prevalecer.
+*.ps1  -text diff
+*.psm1 -text diff
+*.psd1 -text diff
