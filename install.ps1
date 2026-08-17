@@ -363,6 +363,14 @@ function Get-HostDiskInfo {
 }
 
 function Get-OllamaRuntimeInfo {
+    # $ApiRoot e usado na linha do Invoke-RestMethod abaixo, dentro do
+    # scriptblock passado para Invoke-Safely. A partir do PSScriptAnalyzer
+    # 1.25.0 a regra deixa de enxergar uso dentro de scriptblock passado como
+    # argumento e acusa falso positivo; na 1.24.0 (versao fixada na CI) nao
+    # acusa. Suprimido aqui para que o gate local e o da CI concordem.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSReviewUnusedParameter', 'ApiRoot',
+        Justification = 'Usado dentro do scriptblock passado a Invoke-Safely.')]
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([string]$ApiRoot = 'http://127.0.0.1:11434')

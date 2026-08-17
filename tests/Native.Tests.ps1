@@ -14,12 +14,21 @@
     Encoding: ASCII puro, sem BOM, CRLF.
 #>
 
+BeforeDiscovery {
+    # cmd.exe da controle fino sobre stderr e codigo de saida no Windows.
+    #
+    # Precisa ser BeforeDiscovery, e nao BeforeAll: o Pester 5 avalia o
+    # '-Skip:' de cada It na fase de DESCOBERTA, antes de qualquer BeforeAll
+    # rodar. Definido no BeforeAll, o valor ainda era $null na hora da decisao,
+    # '-not $null' virava $true e os cinco testes de stderr eram pulados em
+    # silencio - inclusive na CI, que e onde eles precisam rodar (o bug que
+    # eles cobrem so aparece no Windows PowerShell 5.1).
+    $script:TemCmd = [bool](Get-Command cmd.exe -ErrorAction SilentlyContinue)
+}
+
 BeforeAll {
     . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
     Initialize-AuditLog
-
-    # cmd.exe da controle fino sobre stderr e codigo de saida no Windows.
-    $script:TemCmd = [bool](Get-Command cmd.exe -ErrorAction SilentlyContinue)
 }
 
 Describe 'Invoke-Native com processo que escreve em stderr' {
@@ -58,7 +67,14 @@ Describe 'Invoke-Native com processo que escreve em stderr' {
 Describe 'Format-NativeOutput' {
     It 'remove retorno de carro, que apagaria a mensagem de erro no console' {
         $texto = Format-NativeOutput -Lines @("pulling 45%`r pulling 90%`r pronto")
-        $texto.Contains([char]13) | Should -BeFalse
+
+        # O que destroi a mensagem no console e o CR SOZINHO: ele volta o cursor
+        # para o inicio da linha e o texto seguinte sobrescreve o anterior. O CR
+        # de um CRLF nao faz isso - e o proprio separador de linha do Windows, e
+        # e com [Environment]::NewLine que Format-NativeOutput junta o resultado.
+        # Exigir zero CR reprovaria qualquer saida de mais de uma linha.
+        $texto | Should -Not -Match "`r(?!`n)"
+        $texto | Should -Match 'pronto'
     }
 
     It 'remove sequencias ANSI de cor' {

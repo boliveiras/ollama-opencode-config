@@ -2,6 +2,14 @@
 # gera o arquivo, ou a suite de testes gera. Regra sem motivo real vira
 # ruido e mascara arquivo que deveria ter sido versionado.
 
+# --- Segredos ---
+# Este projeto nao le .env: o Ollama local nao tem credencial e o script nao
+# aceita segredo por parametro. A regra existe como rede de seguranca para
+# fork que acrescente um provider remoto e esqueca de ignorar o arquivo.
+.env
+.env.*
+!.env.example
+
 # --- Gerado pelo install.ps1 ---
 # Com -ConfigScope Project, a configuracao e gravada no diretorio atual.
 # Ela contem caminhos locais e o modelo escolhido para AQUELA maquina:

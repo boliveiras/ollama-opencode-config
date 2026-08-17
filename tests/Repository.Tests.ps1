@@ -189,3 +189,35 @@ Describe 'Higiene de seguranca' {
         $conteudo | Should -Match 'if \(-not \(Confirm-Execution\)\)'
     }
 }
+
+Describe 'Versionamento' {
+    # A versao existe em dois lugares por necessidade, nao por descuido:
+    # o arquivo VERSION e a fonte da verdade do repositorio (tag, release,
+    # assinatura), e a constante dentro do install.ps1 e a unica que sobrevive
+    # ao 'irm | iex', onde nao ha arquivo em disco para ler. Duas copias
+    # divergem sozinhas; este teste e o que impede isso.
+
+    BeforeAll {
+        $script:VersionFile = Join-Path $script:RepoRoot 'VERSION'
+    }
+
+    It 'tem o arquivo VERSION na raiz' {
+        Test-Path -LiteralPath $script:VersionFile | Should -BeTrue
+    }
+
+    It 'usa SemVer (MAJOR.MINOR.PATCH)' {
+        $texto = (Get-Content -LiteralPath $script:VersionFile -Raw).Trim()
+        $texto | Should -Match '^\d+\.\d+\.\d+$'
+    }
+
+    It 'o VERSION e a constante do install.ps1 nao divergem' {
+        $arquivo = (Get-Content -LiteralPath $script:VersionFile -Raw).Trim()
+        $conteudo = Get-Content -LiteralPath $script:MainScript -Raw
+
+        # [regex]::Match em vez de 'Should -Match': o $Matches preenchido pelo
+        # Should vive no escopo dele e nao chega ate aqui no Pester 5.
+        $m = [regex]::Match($conteudo, "\`$script:ScriptVersion\s*=\s*'([^']+)'")
+        $m.Success | Should -BeTrue
+        $m.Groups[1].Value | Should -BeExactly $arquivo
+    }
+}

@@ -220,6 +220,27 @@ pipx run zizmor .github/workflows/
 actionlint
 ```
 
+### Gate local
+
+O `.pre-commit-config.yaml` roda Trivy e PSScriptAnalyzer no `git commit`, antes de a CI ser acionada. Ative uma vez por clone:
+
+```bash
+pre-commit install
+pre-commit run --all-files
+```
+
+O gate local usa o mesmo critério do job `sast-powershell`: `Error` e `Warning` bloqueiam, `Information` aparece na tela e não bloqueia. Gate local mais rígido que o da CI não protege ninguém — só ensina a commitar com `--no-verify`.
+
+Se ao commitar você não vir `trivy` e `PSScriptAnalyzer` como **Passed**, o gate não rodou. O hook padrão do `pre-commit` sai com 0 em silêncio quando não encontra o arquivo de configuração, então "sem erro" e "verificado" não são a mesma coisa aqui.
+
+### Versão
+
+`VERSION` na raiz é a fonte da verdade, em SemVer, e é o que a tag e a release seguem. O `install.ps1` carrega a mesma versão em `$script:ScriptVersion`, porque rodando via `irm | iex` não existe arquivo em disco para ler — o script imprime `ollama-opencode-config vX.Y.Z` ao iniciar e grava a versão em cada linha do log JSONL.
+
+Duas cópias do mesmo número divergem sozinhas com o tempo, então um teste em `tests/Repository.Tests.ps1` falha se elas discordarem. Ao subir a versão, mude as duas no mesmo commit.
+
+Não há endpoint `/version` aqui: isso vale para aplicação servida, e este projeto é um script de instalação — não há processo escutando em porta nenhuma. O banner e o log fazem o mesmo papel.
+
 Para adicionar um modelo ao catálogo, edite `$script:ModelCatalog`. Diga no PR em que hardware você mediu.
 
 ## Licença

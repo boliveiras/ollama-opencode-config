@@ -1,0 +1,62 @@
+# Gate de segurança/qualidade VERSIONADO (viaja no clone). Hooks 'local' usam os
+# binários já instalados na máquina. Polyglot: cada hook só dispara quando há
+# arquivo do tipo dele. Cópia do canônico em `.docs/pre-commit-config.yaml`, com
+# uma adaptação registrada no hook do PSScriptAnalyzer (veja lá embaixo).
+#
+# Este arquivo é obrigatório: o hook instalado pelo git template dir roda com
+# `--skip-on-missing-config`. Sem ele na raiz, o `git commit` sai 0 calado e
+# nenhum scanner roda — parece protegido e não está.
+#
+# Ativar no repo (1x por clone):  pre-commit install
+#   (com o git template dir global configurado, `git init`/`git clone` já instala sozinho)
+# Rodar manual em tudo:           pre-commit run --all-files
+# Pular (emergência):             git commit --no-verify
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  - repo: local
+    hooks:
+      # SCA + secret + misconfig (agnóstico de linguagem) — sempre roda.
+      - id: trivy
+        name: trivy (SCA + secret + misconfig)
+        entry: trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 1 --quiet .
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # SAST shell — só quando há arquivos shell no commit.
+      # --severity=warning: pega bug/quoting/word-splitting/uso inseguro; ignora info/style.
+      - id: shellcheck
+        name: shellcheck (SAST shell)
+        entry: shellcheck --severity=warning
+        language: system
+        types: [shell]
+
+      # SAST Python (Bandit; semgrep nativo Windows quebra) — só em .py.
+      - id: bandit
+        name: bandit (SAST Python)
+        entry: bandit -ll -ii -q
+        language: system
+        types: [python]
+
+      # Lint Python — só em .py.
+      - id: ruff
+        name: ruff (lint Python)
+        entry: ruff check
+        language: system
+        types: [python]
+
+      # SAST PowerShell — só quando há .ps1/.psm1/.psd1 no commit.
+      #
+      # DESVIO DO CANÔNICO, deliberado: o canônico falha em QUALQUER achado.
+      # Aqui o gate é Error/ParseError/Warning, exatamente o mesmo critério do
+      # job `sast-powershell` em .github/workflows/security.yml. Information
+      # (ex.: PSUseOutputTypeCorrectly) é impresso e vai para o code scanning
+      # como `note`, mas não bloqueia. Gate local mais rígido que o da CI não
+      # aumenta segurança nenhuma: ensina a commitar com --no-verify.
+      - id: psscriptanalyzer
+        name: PSScriptAnalyzer (SAST PowerShell)
+        entry: pwsh -NoProfile -Command "$a = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1); if ($a) { $a | Format-Table Severity,RuleName,ScriptName,Line -AutoSize | Out-String -Width 200 | Write-Host }; if (@($a | Where-Object { $_.Severity -in 'Error','ParseError','Warning' })) { exit 1 }"
+        language: system
+        files: \.(ps1|psm1|psd1)$
+        pass_filenames: false

@@ -6,7 +6,9 @@ Não abra issue pública para vulnerabilidade.
 
 Use **Security > Report a vulnerability** no GitHub (Private Vulnerability Reporting) ou mande e-mail para o mantenedor listado no perfil do repositório.
 
-Inclua: o que acontece, como reproduzir, versão do PowerShell e do Windows, e o impacto que você enxerga. Se puder, anexe a saída de `.\Get-OllamaHostInventory.ps1 -AsJson`.
+Inclua: o que acontece, como reproduzir, versão do PowerShell e do Windows, e o impacto que você enxerga. Se puder, anexe a saída de `.\install.ps1 -ShowPlanOnly` — ela traz a versão do script, o hardware detectado e o plano, sem alterar nada na máquina.
+
+Diga também **qual versão** você testou: o arquivo [VERSION](VERSION) na raiz, ou a linha `ollama-opencode-config vX.Y.Z` que o script imprime ao iniciar.
 
 Resposta em até 5 dias úteis. Correção conforme a gravidade. Você é creditado no release, salvo se preferir o contrário.
 
