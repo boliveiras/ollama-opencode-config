@@ -116,10 +116,29 @@ Se você passar `-Model` mas não `-ContextLength`, ele redimensiona o contexto 
 Se for adotar em equipe, **fixe uma tag** em vez de `main`:
 
 ```powershell
-irm https://raw.githubusercontent.com/boliveiras/ollama-opencode-config/refs/tags/v1.0.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/boliveiras/ollama-opencode-config/refs/tags/v1.0.1/install.ps1 | iex
 ```
 
 Uma URL apontando para `main` muda quando o repositório muda. Uma tag não.
+
+### Verificar antes de executar
+
+Cada tag é assinada pelo Sigstore (keyless, via OIDC do GitHub Actions) e o SHA-256 vai no resumo do job. Para conferir que o arquivo que você baixou é o que a CI publicou:
+
+```powershell
+$tag = 'v1.0.1'
+$base = "https://github.com/boliveiras/ollama-opencode-config/releases/download/$tag"
+irm "$base/install.ps1" -OutFile install.ps1
+irm "$base/install.ps1.sigstore.json" -OutFile install.ps1.sigstore.json
+
+# precisa do CLI: pip install sigstore
+sigstore verify identity install.ps1 `
+  --bundle install.ps1.sigstore.json `
+  --cert-identity "https://github.com/boliveiras/ollama-opencode-config/.github/workflows/security.yml@refs/tags/$tag" `
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Se passar, o arquivo saiu daquele workflow, naquela tag, sem ninguém no meio. A assinatura não diz que o código é bom — diz que é o mesmo código que a CI analisou e testou.
 
 O que o script faz por padrão, e por quê:
 
@@ -133,7 +152,7 @@ O que o script faz por padrão, e por quê:
 - **Log estruturado.** JSONL com timestamp UTC em `%LOCALAPPDATA%\opencode-setup\`, pronto para SIEM. Sem segredos, sem prompts.
 - **Nomes de modelo validados por regex.** Eles vão parar em linha de comando e dentro de um Modelfile; `bad;rm -rf /` é rejeitado antes de chegar lá.
 
-O que ele **não** faz: não verifica a assinatura Authenticode dos instaladores (confia no catálogo do winget), e não há assinatura nem hash publicado do próprio script. Se seu ambiente é regulado, hospede um fork interno e assine.
+O que ele **não** faz: não verifica a assinatura Authenticode dos instaladores baixados pelo winget. Se seu ambiente é regulado, hospede um fork interno.
 
 Achou algo? Veja [SECURITY.md](SECURITY.md).
 
@@ -170,7 +189,36 @@ Quatro regras que os testes garantem, e que não são negociáveis:
 - **Sem `exit`, sem `$PSScriptRoot`, sem `$PSCmdlet`, sem `#Requires`.** Nada disso funciona quando o código chega por `iex`: não há arquivo em disco, não há contexto de cmdlet, e `exit` fecharia a sessão do usuário.
 - **A confirmação antes de alterar a máquina tem que existir.** Um teste falha se ela sumir.
 
-A CI roda tudo no Windows, em PowerShell 5.1 e 7, mais varredura de segredos e checagem de encoding.
+### Pipeline
+
+`ci.yml` responde "funciona?"; `security.yml` responde "é seguro?".
+
+| Verificação | Ferramenta | Onde |
+|---|---|---|
+| Testes | Pester 5.7.1, em PowerShell 5.1 **e** 7 | `ci.yml` |
+| Execução via `irm \| iex` | o próprio script, nos dois shells | `ci.yml` |
+| Encoding e integridade do blob | ASCII, BOM, `git ls-files --eol`, blob vs arquivo | `ci.yml` |
+| SAST PowerShell | PSScriptAnalyzer 1.24.0 → SARIF → code scanning | `security.yml` |
+| SAST dos workflows | CodeQL (`actions`) + zizmor | `security.yml` |
+| SCA / supply chain | pin por SHA, versão exata no PSGallery, Dependabot | `security.yml` |
+| Segredos | gitleaks, histórico completo | `security.yml` |
+| Assinatura | Sigstore keyless + SHA-256, em tags | `security.yml` |
+
+Sobre o que **não** está aqui, para ninguém procurar: **DAST** não se aplica — não há aplicação web; o mais próximo é a checagem em runtime de que a porta do Ollama não escuta fora de loopback. **Scan de container** não se aplica — não há imagem. **Scan de IaC** é coberto pelo CodeQL e pelo zizmor nos workflows, que é a única infra declarada aqui.
+
+Também não há SCA clássico porque não há dependência de runtime: o `install.ps1` não importa nenhum módulo, e um teste falha se alguém introduzir um `Import-Module`. A superfície de supply chain que existe de fato são as Actions do CI e os módulos do PSGallery — e é exatamente isso que o job `supply-chain` verifica.
+
+Para rodar as mesmas checagens localmente:
+
+```powershell
+Invoke-Pester ./tests
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+```
+
+```bash
+pipx run zizmor .github/workflows/
+actionlint
+```
 
 Para adicionar um modelo ao catálogo, edite `$script:ModelCatalog`. Diga no PR em que hardware você mediu.
 

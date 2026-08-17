@@ -1,0 +1,263 @@
+name: Security
+
+# Separado do CI de propósito: o CI responde "funciona?", este responde
+# "e seguro?". Falha aqui nao e flake de teste, e achado a ser tratado.
+#
+# Todas as actions sao fixadas por SHA de commit. Tag e ponteiro mutavel:
+# quem controla a tag pode trocar o codigo que roda com o token do repo.
+# O Dependabot (.github/dependabot.yml) mantem os SHAs atualizados.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  schedule:
+    # Semanal: achado novo aparece sem depender de alguem abrir PR.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # SAST do codigo PowerShell
+  # ---------------------------------------------------------------------
+  sast-powershell:
+    name: SAST (PowerShell)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Instalar PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          # -RequiredVersion, nao -MinimumVersion: build reproduzivel e
+          # resistente a versao nova quebrada ou comprometida.
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -RequiredVersion 1.24.0
+
+      - name: Analisar
+        id: analise
+        shell: pwsh
+        run: |
+          $achados = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          & ./tools/Export-AnalyzerSarif.ps1 -Diagnostics $achados -OutputPath psscriptanalyzer.sarif
+
+          if ($achados) {
+            $achados | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize |
+              Out-String -Width 200 | Write-Host
+          }
+
+          $erros = @($achados | Where-Object { $_.Severity -in 'Error', 'ParseError' })
+          $avisos = @($achados | Where-Object { $_.Severity -eq 'Warning' })
+          "erros=$($erros.Count)"   | Out-File $env:GITHUB_OUTPUT -Append
+          "avisos=$($avisos.Count)" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Publicar no code scanning
+        # if: always() -> o SARIF sobe mesmo com achado bloqueante, senao o
+        # resultado do gate mais importante seria justamente o que nao chega
+        # ao painel de seguranca.
+        if: always()
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          sarif_file: psscriptanalyzer.sarif
+          category: psscriptanalyzer
+
+      - name: Falhar em Error ou Warning
+        shell: pwsh
+        # Os valores chegam por env, nao interpolados no corpo do script:
+        # '${{ }}' dentro de 'run' e expandido ANTES da execucao, entao
+        # conteudo controlado por terceiro viraria codigo. Aqui a origem e
+        # confiavel, mas o padrao vale como habito - e o zizmor cobra.
+        env:
+          ERROS: ${{ steps.analise.outputs.erros }}
+          AVISOS: ${{ steps.analise.outputs.avisos }}
+        run: |
+          $erros = [int]$env:ERROS
+          $avisos = [int]$env:AVISOS
+          if ($erros -gt 0 -or $avisos -gt 0) {
+            throw "PSScriptAnalyzer: $erros erro(s), $avisos aviso(s). Veja a aba Security."
+          }
+          Write-Host 'Sem achados de Error ou Warning.'
+
+  # ---------------------------------------------------------------------
+  # SAST dos workflows: eles sao o codigo com mais privilegio do repositorio
+  # ---------------------------------------------------------------------
+  sast-workflows:
+    name: SAST (GitHub Actions)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: CodeQL init
+        uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          languages: actions
+          queries: security-extended
+
+      - name: CodeQL analyze
+        uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          category: codeql-actions
+
+      - name: zizmor (auditoria de seguranca de workflow)
+        run: |
+          # Versao fixa: ferramenta de seguranca que se atualiza sozinha muda
+          # o resultado do gate sem ninguem ter mudado o codigo.
+          python -m pip install --require-hashes --no-deps --dry-run 2>/dev/null || true
+          python -m pip install 'zizmor==1.29.0'
+          zizmor --format sarif .github/workflows/ > zizmor.sarif || true
+          zizmor --persona=regular .github/workflows/
+
+      - name: Publicar zizmor no code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  # ---------------------------------------------------------------------
+  # SCA / supply chain
+  #
+  # Este repositorio nao tem dependencia de runtime: o install.ps1 e um
+  # arquivo unico sem import de modulo. A superficie de supply chain que
+  # existe de fato e (a) as actions do CI e (b) os modulos do PSGallery
+  # instalados durante o pipeline. E isso que e verificado aqui.
+  # ---------------------------------------------------------------------
+  supply-chain:
+    name: SCA (supply chain)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Toda action fixada por SHA de commit
+        run: |
+          set -euo pipefail
+          # O padrao e ancorado no inicio da linha e para no primeiro espaco
+          # ou '#'. Sem isso, o comentario '# v4' entraria no SHA e ocorrencias
+          # da palavra 'uses:' dentro de blocos 'run' seriam analisadas - este
+          # proprio check se acusaria.
+          falhou=0
+          while IFS= read -r entrada; do
+            arquivo="${entrada%%:*}"
+            ref="${entrada#*:}"
+            case "$ref" in
+              ./*|docker://*) continue ;;   # action local ou imagem: fora do escopo
+            esac
+            sha="${ref##*@}"
+            if ! printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+              echo "::error file=$arquivo::'$ref' nao esta fixada por SHA de commit de 40 caracteres"
+              falhou=1
+            else
+              echo "  ok  ${ref%@*}"
+            fi
+          done < <(grep -rHoP '^\s*(- )?uses:\s*\K[^\s#]+' .github/workflows/)
+          [ "$falhou" -eq 0 ] && echo "Todas as actions fixadas por SHA."
+          exit "$falhou"
+
+      - name: Modulos do PSGallery com versao exata
+        run: |
+          set -euo pipefail
+          # -MinimumVersion deixa o pipeline puxar versao nova sem revisao.
+          # Em pipeline de seguranca isso e um canal de execucao nao revisado.
+          # Ancorado no inicio da linha: pega invocacao real, nao mencao
+          # em comentario nem a propria linha deste check.
+          if grep -rHnP '^\s*Install-Module\b.*-MinimumVersion' .github/workflows/; then
+            echo "::error ::use -RequiredVersion em vez de -MinimumVersion"
+            exit 1
+          fi
+          if ! grep -rhP '^\s*Install-Module\b' .github/workflows/ | grep -q -- '-RequiredVersion'; then
+            echo "::error ::nenhum Install-Module com -RequiredVersion encontrado"
+            exit 1
+          fi
+          echo "Todos os Install-Module usam -RequiredVersion:"
+          grep -rhP '^\s*Install-Module\b' .github/workflows/ | sed 's/^/  /'
+
+      - name: Nenhuma dependencia de runtime nao declarada
+        run: |
+          set -euo pipefail
+          # O install.ps1 e autocontido por design (roda via 'irm | iex', sem
+          # arquivo em disco). Import-Module de terceiro quebraria isso e
+          # acrescentaria supply chain silenciosa.
+          if grep -nE '^\s*(Import-Module|using module|#Requires -Modules)' install.ps1; then
+            echo "::error file=install.ps1::dependencia externa em um script que precisa ser autocontido"
+            exit 1
+          fi
+          echo "install.ps1 continua autocontido."
+
+  # ---------------------------------------------------------------------
+  # Segredos
+  # ---------------------------------------------------------------------
+  secrets:
+    name: Varredura de segredos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # historico inteiro: segredo removido depois continua no git
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'   # o relatorio conteria o segredo
+
+  # ---------------------------------------------------------------------
+  # Assinatura do artefato publicado
+  # ---------------------------------------------------------------------
+  assinar:
+    name: Assinar install.ps1
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [sast-powershell, sast-workflows, supply-chain, secrets]
+    permissions:
+      contents: read
+      id-token: write   # OIDC para assinatura keyless do Sigstore
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: SHA-256
+        run: |
+          # Hash do arquivo como esta no repositorio. Como os .ps1 sao '-text'
+          # no .gitattributes, e byte a byte o mesmo que o raw entrega.
+          sha256sum install.ps1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Assinar com Sigstore (keyless)
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        with:
+          inputs: install.ps1
+          upload-signing-artifacts: true
+
+      - name: Anexar assinatura a release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: install-ps1-sigstore
+          path: |
+            install.ps1
+            install.ps1.sigstore.json
+          if-no-files-found: error

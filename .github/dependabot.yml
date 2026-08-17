@@ -1,0 +1,24 @@
+# As Actions do CI sao as unicas dependencias de terceiro deste repositorio:
+# o install.ps1 nao importa modulo nem biblioteca externa. Elas rodam com o
+# token do repositorio, entao acao comprometida e o vetor de supply chain que
+# realmente existe aqui.
+#
+# Estao fixadas por SHA de commit no workflow (tag e mutavel, SHA nao). O
+# Dependabot mantem esses SHAs atualizados via pull request, o que preserva a
+# rastreabilidade sem congelar versao vulneravel para sempre.
+
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "security"
