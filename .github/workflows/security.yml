@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: |
           $achados = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
-          & ./tools/Export-AnalyzerSarif.ps1 -Diagnostics $achados -OutputPath psscriptanalyzer.sarif
+          & ./.github/tools/Export-AnalyzerSarif.ps1 -Diagnostics $achados -OutputPath psscriptanalyzer.sarif
 
           if ($achados) {
             $achados | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize |

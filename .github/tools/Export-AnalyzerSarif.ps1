@@ -25,9 +25,11 @@
 
 .EXAMPLE
     $d = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
-    .\tools\Export-AnalyzerSarif.ps1 -Diagnostics $d -OutputPath results.sarif
+    .\.github\tools\Export-AnalyzerSarif.ps1 -Diagnostics $d -OutputPath results.sarif
 
 .NOTES
+    Vive sob .github/ porque seu unico consumidor e o workflow security.yml.
+
     Encoding: ASCII puro, sem BOM, CRLF.
 #>
 
